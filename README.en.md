@@ -1,16 +1,16 @@
 # Cowart
 
-Cowart is a local infinite-canvas plugin for Codex. It brings a tldraw-powered canvas into Codex for visual thinking, annotation, image generation, and annotation-driven image edits. The canvas runs as a local web service, and its data is saved in the active user project under `canvas/` instead of inside the plugin repository.
+Cowart is a native infinite-canvas widget plugin for Codex. It brings a tldraw-powered canvas into Codex for visual thinking, annotation, image generation, and annotation-driven image edits. The canvas opens directly as an MCP widget, and its data is saved in the active user project under `canvas/` instead of inside the plugin repository.
 
 中文说明: [README.md](README.md)
 
 ## Features
 
-- Open a local tldraw infinite canvas from Codex.
+- Open a native tldraw infinite-canvas widget from Codex.
 - Persist canvas pages and image assets in the active project directory.
 - Create AI image holders on the canvas and ask Codex to generate images into the selected holder.
 - Provide Cowart annotation screenshots and let Codex generate clean revised images beside the original.
-- Use Cowart MCP tools to read selection state, insert images, and save page-local assets.
+- Use Cowart MCP tools to read selection state, save the canvas, insert images, and save page-local assets.
 
 ## Installation
 
@@ -82,11 +82,7 @@ Ask Codex:
 Open the Cowart canvas for this project.
 ```
 
-Cowart starts a local service at:
-
-```text
-http://127.0.0.1:43217/
-```
+Cowart opens a native Codex widget through `render_cowart_canvas_widget`; it no longer needs a localhost page or manual in-app-browser navigation.
 
 Canvas data is saved in the active project:
 
@@ -127,7 +123,7 @@ Codex reads the notes and arrows in the screenshot, generates a clean revised im
 
 ## Skills
 
-- `cowart:cowart-open-canvas`: open the local Cowart canvas.
+- `cowart:cowart-open-canvas`: open the native Cowart canvas widget.
 - `cowart:cowart-image-gen`: insert a generated image into the selected AI image holder.
 - `cowart:cowart-image-edit`: generate a revised image from a user-provided Cowart annotation screenshot.
 
@@ -139,7 +135,7 @@ npm run dev
 npm run build
 ```
 
-You can also start the canvas service directly and pass the active user project directory:
+For local development, you can still start the Vite canvas service directly and pass the active user project directory:
 
 ```bash
 ./scripts/start-canvas.sh /path/to/user/project

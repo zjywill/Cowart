@@ -9,11 +9,7 @@ Use this skill when the user wants an AI-generated image placed onto the Cowart 
 
 ## Preconditions
 
-The Cowart service should be running for the user's active project, usually at:
-
-```text
-http://127.0.0.1:43217
-```
+The native Cowart widget should be open for the user's active project. Cowart state is read and written through Cowart MCP tools, not through a localhost browser service.
 
 New holders are tldraw `frame` shapes with:
 
@@ -31,13 +27,7 @@ meta flag. Support both shapes.
 
 ## Workflow
 
-1. Read the selected shape from Cowart:
-
-   ```bash
-   curl -s http://127.0.0.1:43217/api/selection
-   ```
-
-   You can also use the Cowart MCP `get_cowart_selection` tool if it is available.
+1. Read the selected shape from Cowart with the MCP `get_cowart_selection` tool. Pass the active user project directory as `projectDir`.
 
 2. Check whether exactly one selected shape is an AI image holder. A holder is any selected shape with either:
 
@@ -128,11 +118,7 @@ meta flag. Support both shapes.
 
 6. Do not delete the holder unless the user explicitly asks for replacement. Keeping the holder lets Codex identify the intended slot again later. In the standalone workflow, do not create a holder first unless the user explicitly asks for one.
 
-7. Save through Cowart's API or edit the page snapshot carefully:
-
-   ```bash
-   curl -s http://127.0.0.1:43217/api/canvas
-   ```
+7. Save through Cowart MCP. Prefer `insert_cowart_image` for inserting the generated bitmap, or use `save_cowart_canvas_state` only when you must update the whole tldraw snapshot.
 
    Prefer page-local asset URLs in the image asset:
 
@@ -140,7 +126,7 @@ meta flag. Support both shapes.
    /page-assets/<page-id-without-page-prefix>/<filename>
    ```
 
-8. Refresh or let the browser hot-reload, then confirm the inserted shape id, final dimensions, target aspect ratio, and saved asset path. Include the holder id only when the holder workflow was used.
+8. Let the Cowart widget refresh from MCP-backed storage, then confirm the inserted shape id, final dimensions, target aspect ratio, and saved asset path. Include the holder id only when the holder workflow was used.
 
 ## Notes
 

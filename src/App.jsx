@@ -42,20 +42,26 @@ import {
   useEditor,
   useValue
 } from 'tldraw'
+import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
 import { AllSelection } from '@tiptap/pm/state'
 import 'tldraw/tldraw.css'
 import { useCallback, useEffect, useState } from 'react'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
+import {
+  IS_COWART_WIDGET_BUILD,
+  hasCowartWidgetBridge,
+  loadCowartCanvasState,
+  refreshCowartCanvasSnapshot,
+  saveCowartCanvasSnapshot,
+  saveCowartSelectionState,
+  saveCowartViewState
+} from './cowartClient.js'
 import {
   describeSkippedRecord,
   isCanvasSnapshot,
   sanitizeCanvasSnapshotForTldraw
 } from './canvasSnapshot.js'
 
-const CANVAS_ENDPOINT = '/api/canvas'
-const CANVAS_EVENTS_ENDPOINT = '/api/canvas-events'
-const SELECTION_ENDPOINT = '/api/selection'
-const VIEW_STATE_ENDPOINT = '/api/view-state'
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
 const AI_IMAGE_TOOL_ID = 'ai-image'
 const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
@@ -89,6 +95,21 @@ const annotationToolIcon = (
     dangerouslySetInnerHTML={{ __html: annotationToolIconSvg }}
   />
 )
+const iconSvgSources = import.meta.glob(
+  '../node_modules/@tldraw/assets/icons/icon/*.svg',
+  { eager: true, query: '?raw', import: 'default' }
+)
+const cowartAssetUrls = buildCowartAssetUrls()
+
+function buildCowartAssetUrls() {
+  const icons = {}
+  for (const [path, source] of Object.entries(iconSvgSources)) {
+    const name = path.split('/').pop().replace(/\.svg$/, '')
+    icons[name] = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(source)))}`
+  }
+  const base = getAssetUrlsByImport()
+  return { ...base, icons: { ...base.icons, ...icons } }
+}
 
 function recordsAreEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
@@ -995,24 +1016,11 @@ export default function App() {
 
     async function loadCanvas() {
       try {
-        const [canvasResponse, viewStateResponse] = await Promise.all([
-          fetch(CANVAS_ENDPOINT, { signal: controller.signal }),
-          fetch(VIEW_STATE_ENDPOINT, { signal: controller.signal })
-        ])
-        if (!canvasResponse.ok) {
-          throw new Error(`Failed to load canvas: ${canvasResponse.status} - ${canvasResponse.statusText}`)
-        }
-        if (!viewStateResponse.ok) {
-          throw new Error(`Failed to load canvas view state: ${viewStateResponse.status} - ${viewStateResponse.statusText}`)
-        }
-        const [canvasData, viewStateData] = await Promise.all([
-          canvasResponse.json(),
-          viewStateResponse.json()
-        ])
-        const sanitized = sanitizeCanvasSnapshotForTldraw(canvasData.snapshot)
+        const canvasState = await loadCowartCanvasState(controller.signal)
+        const sanitized = sanitizeCanvasSnapshotForTldraw(canvasState.snapshot)
         setSnapshot(sanitized.snapshot)
         setSkippedRecords(sanitized.skippedRecords)
-        setViewState(viewStateData.viewState ?? null)
+        setViewState(canvasState.viewState ?? null)
       } catch (error) {
         if (error.name === 'AbortError') return
         setLoadError(error)
@@ -1056,17 +1064,10 @@ export default function App() {
 
       isSelectionStateSaving = true
       try {
-        const response = await fetch(SELECTION_ENDPOINT, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            ...selectionSnapshot,
-            updatedAt: new Date().toISOString()
-          })
+        await saveCowartSelectionState({
+          ...selectionSnapshot,
+          updatedAt: new Date().toISOString()
         })
-        if (!response.ok) {
-          throw new Error(`Failed to save selection: ${response.status}`)
-        }
       } catch (error) {
         console.error(error)
       } finally {
@@ -1098,14 +1099,7 @@ export default function App() {
 
       isViewStateSaving = true
       try {
-        const response = await fetch(VIEW_STATE_ENDPOINT, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: nextViewState
-        })
-        if (!response.ok) {
-          throw new Error(`Failed to save view state: ${response.status}`)
-        }
+        await saveCowartViewState(viewStateSnapshot)
       } catch (error) {
         console.error(error)
       } finally {
@@ -1137,15 +1131,7 @@ export default function App() {
 
       isSaving = true
       try {
-        const body = JSON.stringify(editor.store.getStoreSnapshot())
-        const response = await fetch(CANVAS_ENDPOINT, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body
-        })
-        if (!response.ok) {
-          throw new Error(`Failed to save canvas: ${response.status}`)
-        }
+        await saveCowartCanvasSnapshot(editor.store.getStoreSnapshot())
         hasUnsavedChanges = false
       } catch (error) {
         console.error(error)
@@ -1173,17 +1159,12 @@ export default function App() {
       const preFetchStore = preserveLocalChanges ? null : editor.store.getStoreSnapshot().store
 
       try {
-        const response = await fetch(CANVAS_ENDPOINT, { signal: controller.signal })
-        if (!response.ok) {
-          throw new Error(`Failed to refresh canvas: ${response.status}`)
-        }
-
-        const canvasData = await response.json()
+        const nextSnapshot = await refreshCowartCanvasSnapshot(controller.signal)
         const effectivePreserve =
           preserveLocalChanges || (preFetchStore && storeChangedSinceSnapshot(editor, preFetchStore))
         const { changedRecords, skippedRecords: nextSkippedRecords } = applyRemoteCanvasSnapshot(
           editor,
-          canvasData.snapshot,
+          nextSnapshot,
           {
             preserveLocalChanges: effectivePreserve
           }
@@ -1214,8 +1195,11 @@ export default function App() {
     })
 
     let canvasEvents = null
-    if ('EventSource' in window) {
-      canvasEvents = new EventSource(CANVAS_EVENTS_ENDPOINT)
+    let canvasRefreshTimer = null
+    if (hasCowartWidgetBridge()) {
+      canvasRefreshTimer = window.setInterval(loadRemoteCanvasSnapshot, 1600)
+    } else if (!IS_COWART_WIDGET_BUILD && 'EventSource' in window) {
+      canvasEvents = new window.EventSource('/api/canvas-events')
       canvasEvents.addEventListener('canvas-changed', loadRemoteCanvasSnapshot)
       canvasEvents.onerror = (error) => {
         console.warn('Cowart canvas live refresh disconnected.', error)
@@ -1290,6 +1274,7 @@ export default function App() {
       window.clearTimeout(saveTimer)
       window.clearInterval(selectionStateTimer)
       window.clearInterval(viewStateTimer)
+      window.clearInterval(canvasRefreshTimer)
       remoteLoadController?.abort()
       canvasEvents?.close()
       if (window.__cowartEditor === editor) {
@@ -1327,6 +1312,7 @@ export default function App() {
       <SkippedRecordsNotice records={skippedRecords} />
       <Tldraw
         snapshot={snapshot ?? undefined}
+        assetUrls={cowartAssetUrls}
         inferDarkMode
         onMount={handleMount}
         overrides={cowartUiOverrides}

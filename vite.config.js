@@ -617,6 +617,20 @@ function canvasStoragePlugin() {
 
 export default defineConfig({
   plugins: [react(), canvasStoragePlugin()],
+  define: {
+    __COWART_WIDGET_BUILD__: JSON.stringify(process.env.COWART_WIDGET_BUILD === '1'),
+    'process.env.NODE_ENV': JSON.stringify('development')
+  },
+  build: {
+    modulePreload: false,
+    assetsInlineLimit: Number.MAX_SAFE_INTEGER,
+    cssCodeSplit: false,
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true
+      }
+    }
+  },
   server: {
     host: '127.0.0.1',
     port: 43217
