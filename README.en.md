@@ -6,10 +6,10 @@ Cowart is a native infinite-canvas widget plugin for Codex. It brings a tldraw-p
 
 ## Features
 
-- Open a native tldraw infinite-canvas widget from Codex.
+- Open a native tldraw infinite-canvas widget from Codex; normal use no longer opens a local page through a web browser or the in-app browser.
 - Persist canvas pages and image assets in the active project directory.
-- Create AI image holders on the canvas and ask Codex to generate images that replace the selected holder.
-- Provide Cowart annotation screenshots and let Codex generate clean revised images beside the original.
+- Create AI image slots on the canvas, enter a prompt directly, choose reference images, and let Codex generate an image that replaces the selected slot at the same position and aspect ratio.
+- After annotating an image, submit the annotation screenshot directly from the canvas so Codex can generate a clean revised image beside the original.
 - Use Cowart MCP tools to read selection state, save the canvas, insert images, and save page-local assets.
 
 ## Installation
@@ -82,7 +82,7 @@ Ask Codex:
 Open the Cowart canvas for this project.
 ```
 
-Cowart opens a native Codex widget through `render_cowart_canvas_widget`; it no longer needs a localhost page or manual in-app-browser navigation.
+Cowart opens a native Codex widget through `render_cowart_canvas_widget`; it no longer needs a localhost page or manual in-app-browser navigation. `scripts/start-canvas.sh` remains only as a local-development fallback.
 
 Canvas data is saved in the active project:
 
@@ -96,36 +96,28 @@ canvas/pages/<page-id>/assets/
 ### Generate A New Image
 
 1. Open the Cowart canvas.
-2. Create and select an AI image holder on the canvas.
-3. Describe the image you want Codex to generate, for example:
+2. Create and select an `AI 图片` slot on the canvas.
+3. In the generation panel, enter a prompt, optionally choose one or more reference images, then send the request.
 
-```text
-Generate a new image to replace the selected Cowart AI image holder.
-```
-
-Codex reads the selected holder, matches its position and aspect ratio, generates the image, and replaces the holder with a normal image shape.
+Cowart sends the prompt, reference images, and selected `AI 图片` slot dimensions to Codex. Codex generates an image for that position and aspect ratio, then replaces the `AI 图片` slot with a normal image shape.
 
 ![Generate and insert a new image with Cowart](assets/generate-image.png)
 
 ### Generate From An Annotation Screenshot
 
 1. Annotate an image on the Cowart canvas.
-2. Take a screenshot of the annotated image and send it to Codex.
-3. Use this prompt:
+2. Select the annotated image and click `按标注修改`.
+3. Cowart exports a screenshot containing the original image, arrows, and annotation text, then sends it to Codex through the widget bridge.
 
-```text
-Use my Cowart annotation screenshot to generate a clean revised image beside the original.
-```
-
-Codex reads the notes and arrows in the screenshot, generates a clean revised image without annotation artifacts, and places it beside the original. The original image and annotations are not deleted or moved.
+Codex reads the notes and arrows in the screenshot, generates a clean revised image without annotation artifacts, and places it beside the original. The original image and annotations are not deleted or moved. You can also manually send a Cowart annotation screenshot to Codex and use the same revision workflow.
 
 ![Generate a revised image from a Cowart annotation screenshot](assets/annotation-edit.png)
 
 ## Skills
 
 - `cowart:cowart-open-canvas`: open the native Cowart canvas widget.
-- `cowart:cowart-image-gen`: replace the selected AI image holder with a generated image.
-- `cowart:cowart-image-edit`: generate a revised image from a user-provided Cowart annotation screenshot.
+- `cowart:cowart-image-gen`: receive the canvas prompt and reference images, replace the selected `AI 图片` slot with a generated image, or insert a generated image into the current page when no slot is selected.
+- `cowart:cowart-image-edit`: generate a revised image from a Cowart annotation screenshot submitted from the canvas or provided by the user.
 
 ## Local Development
 

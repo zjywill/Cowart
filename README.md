@@ -6,10 +6,10 @@ English README: [README.en.md](README.en.md)
 
 ## 功能
 
-- 在 Codex 中打开一个原生 tldraw 无限画布 widget。
+- 在 Codex 中打开一个原生 tldraw 无限画布 widget；正常使用不再通过网页浏览器或 in-app browser 打开本地页面。
 - 在当前项目目录中持久化画布页面和图片资源。
-- 在画布中创建 AI image holder，并让 Codex 按选中 holder 的位置和比例生成图片后替换它。
-- 上传或提供 Cowart 标注截图，让 Codex 根据标注生成干净的新图并放到原图旁边。
+- 在画布中创建 AI 图片框，直接输入 prompt、选择参考图，并让 Codex 按选中框的位置和比例生成图片后替换它。
+- 标注好图片后，可从画布里直接提交标注截图，让 Codex 根据标注生成干净的新图并放到原图旁边。
 - 通过 Cowart MCP 工具读取选择状态、保存画布、插入图片，并保存到页面本地资源目录。
 
 ## 安装
@@ -82,7 +82,7 @@ codex plugin add cowart@personal
 Open the Cowart canvas for this project.
 ```
 
-Cowart 会通过 `render_cowart_canvas_widget` 打开 Codex 原生 widget，不需要再启动本地网页服务或手动打开 in-app browser。
+Cowart 会通过 `render_cowart_canvas_widget` 打开 Codex 原生 widget，不需要再启动本地网页服务或手动打开 in-app browser。`scripts/start-canvas.sh` 只保留为本地开发 fallback。
 
 画布数据会保存在当前项目目录下：
 
@@ -96,36 +96,28 @@ canvas/pages/<page-id>/assets/
 ### 生成新图
 
 1. 打开 Cowart 画布。
-2. 在画布里创建并选中一个 AI image holder。
-3. 在 Codex 中描述要生成的图片，例如：
+2. 在画布里创建并选中一个 `AI 图片` 框。
+3. 在弹出的生成面板里输入 prompt，也可以选择一张或多张参考图，然后点击发送。
 
-```text
-Generate a new image to replace the selected Cowart AI image holder.
-```
-
-Codex 会读取选中的 holder，按它的位置和比例生成图片，然后把 holder 替换成普通图片形状。
+Cowart 会把 prompt、参考图和选中 `AI 图片` 框的尺寸信息发送给 Codex。Codex 会按这个框的位置和比例生成图片，然后把 `AI 图片` 框替换成普通图片形状。
 
 ![使用 Cowart 生成并插入新图](assets/generate-image.png)
 
 ### 根据标注图生成新图
 
 1. 在 Cowart 画布中对图片做标注。
-2. 截图并把标注截图发给 Codex。
-3. 使用提示：
+2. 选中被标注的图片，点击 `按标注修改`。
+3. Cowart 会导出包含原图、箭头和标注文字的截图，并通过 widget bridge 发送给 Codex。
 
-```text
-Use my Cowart annotation screenshot to generate a clean revised image beside the original.
-```
-
-Codex 会读取截图里的标注和箭头，生成去掉标注痕迹的新图，并把结果放在原图旁边。原图和标注不会被删除或移动。
+Codex 会读取截图里的标注和箭头，生成去掉标注痕迹的新图，并把结果放在原图旁边。原图和标注不会被删除或移动。你也可以手动把 Cowart 标注截图发给 Codex，走同样的修订流程。
 
 ![根据 Cowart 标注截图生成修订图](assets/annotation-edit.png)
 
 ## 技能
 
 - `cowart:cowart-open-canvas`：打开 Cowart 原生画布 widget。
-- `cowart:cowart-image-gen`：用生成图片替换选中的 AI image holder。
-- `cowart:cowart-image-edit`：根据用户提供的 Cowart 标注截图生成修订图。
+- `cowart:cowart-image-gen`：接收画布内 prompt 和参考图，用生成图片替换选中的 `AI 图片` 框；没有选中框时也可以把生成图插入当前页面。
+- `cowart:cowart-image-edit`：根据画布提交或用户提供的 Cowart 标注截图生成修订图。
 
 ## 本地开发
 
