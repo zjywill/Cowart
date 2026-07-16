@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { generateKeyBetween } from "fractional-indexing";
+import { SaxesParser } from "saxes";
 import { z } from "zod";
 
 import {
@@ -39,6 +40,7 @@ const TOOL_SAVE_SELECTION_STATE = "save_cowart_selection_state";
 const TOOL_SAVE_VIEW_STATE = "save_cowart_view_state";
 const TOOL_GET_SELECTION = "get_cowart_selection";
 const TOOL_INSERT_IMAGE = "insert_cowart_image";
+const TOOL_DRAW_SVG = "draw_cowart_svg";
 const TOOL_INSERT_HTML_DRAFT = "insert_cowart_html_draft";
 const TOOL_SAVE_REFERENCE_IMAGE = "save_cowart_reference_image";
 const TOOL_READ_PAGE_ASSET = "read_cowart_page_asset";
@@ -50,6 +52,105 @@ const COWART_HTML_DRAFT_URL_ORIGIN = "http://cowart.local";
 const DEFAULT_DISPLAY_MODE = "fullscreen";
 const COWART_RESOURCE_DOMAINS = ["data:", "blob:"];
 const COWART_FRAME_DOMAINS = ["data:", "blob:"];
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
+const MAX_INLINE_SVG_BYTES = 1_000_000;
+const ALLOWED_SVG_ELEMENTS = new Set([
+  "circle",
+  "clippath",
+  "defs",
+  "desc",
+  "ellipse",
+  "g",
+  "lineargradient",
+  "line",
+  "marker",
+  "mask",
+  "path",
+  "pattern",
+  "polygon",
+  "polyline",
+  "radialgradient",
+  "rect",
+  "stop",
+  "svg",
+  "symbol",
+  "text",
+  "title",
+  "tspan",
+  "use",
+]);
+const ALLOWED_SVG_ATTRIBUTES = new Set([
+  "aria-label",
+  "clip-path",
+  "clip-rule",
+  "cx",
+  "cy",
+  "d",
+  "dominant-baseline",
+  "dx",
+  "dy",
+  "fill",
+  "fill-opacity",
+  "fill-rule",
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "gradienttransform",
+  "gradientunits",
+  "height",
+  "href",
+  "id",
+  "letter-spacing",
+  "marker-end",
+  "marker-mid",
+  "marker-start",
+  "mask",
+  "offset",
+  "opacity",
+  "orient",
+  "overflow",
+  "pathlength",
+  "patterncontentunits",
+  "patterntransform",
+  "patternunits",
+  "points",
+  "preserveaspectratio",
+  "r",
+  "refx",
+  "refy",
+  "role",
+  "rx",
+  "ry",
+  "spreadmethod",
+  "stop-color",
+  "stop-opacity",
+  "stroke",
+  "stroke-dasharray",
+  "stroke-dashoffset",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "stroke-miterlimit",
+  "stroke-opacity",
+  "stroke-width",
+  "text-anchor",
+  "transform",
+  "vector-effect",
+  "viewbox",
+  "width",
+  "word-spacing",
+  "x",
+  "x1",
+  "x2",
+  "xlink:href",
+  "xml:space",
+  "xmlns",
+  "xmlns:xlink",
+  "y",
+  "y1",
+  "y2",
+]);
 
 const projectArgsSchema = {
   projectDir: z.string().trim().optional(),
@@ -69,7 +170,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Render and update the native Cowart Codex widget. Use render_cowart_canvas_widget to open the canvas for the active project, get_cowart_selection for persisted widget selection, save_cowart_reference_image for widget-provided reference images, read_cowart_page_asset for lazy widget asset loading, download_cowart_file to save widget-requested files into the user's Downloads folder, insert_cowart_image to place or replace bitmap assets, and insert_cowart_html_draft to save and embed HTML drafts in the project-backed canvas without hand-writing tldraw records.",
+      "Render and update the native Cowart Codex widget. Use render_cowart_canvas_widget to open the canvas for the active project, draw_cowart_svg to draw simple illustrations such as a pig directly from model-authored SVG, get_cowart_selection for persisted widget selection, save_cowart_reference_image for widget-provided reference images, read_cowart_page_asset for lazy widget asset loading, download_cowart_file to save widget-requested files into the user's Downloads folder, insert_cowart_image to place or replace local image assets, and insert_cowart_html_draft to save and embed HTML drafts in the project-backed canvas without hand-writing tldraw records.",
   },
 );
 
@@ -110,6 +211,11 @@ function sanitizeDirectoryName(name, fallbackName = "Cowart Export") {
 function sanitizeHtmlFileName(name, fallbackName = "draft.html") {
   const safeName = sanitizeFileName(name, fallbackName);
   return /\.html?$/i.test(safeName) ? safeName : `${safeName.replace(/\.[^.]+$/, "")}.html`;
+}
+
+function sanitizeSvgFileName(name, fallbackName = "cowart-drawing.svg") {
+  const safeName = sanitizeFileName(name, fallbackName);
+  return /\.svg$/i.test(safeName) ? safeName : `${safeName.replace(/\.[^.]+$/, "")}.svg`;
 }
 
 function sanitizeIdPart(value, fallback = "image") {
@@ -155,6 +261,127 @@ function parseDownloadDataUrl(dataUrl) {
     ? Buffer.from(payload, "base64")
     : Buffer.from(decodeURIComponent(payload), "utf8");
   return { buffer, mimeType };
+}
+
+function positiveSvgNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseSvgLength(value) {
+  const match = /^\s*(\d+(?:\.\d+)?|\.\d+)(?:px)?\s*$/i.exec(String(value || ""));
+  return match ? positiveSvgNumber(match[1]) : null;
+}
+
+function parseSvgViewBox(value) {
+  const parts = String(value || "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return null;
+  const width = positiveSvgNumber(parts[2]);
+  const height = positiveSvgNumber(parts[3]);
+  return width && height ? { width, height } : null;
+}
+
+function validateSvgAttributeValue(attributeName, value) {
+  const rawValue = String(value || "").trim();
+  if (attributeName === "xmlns" || attributeName === "xmlns:xlink") return;
+  if (/^(?:data|file|https?|javascript):/i.test(rawValue) || /^\/\//.test(rawValue)) {
+    throw new Error(`Unsafe external value in SVG attribute ${attributeName}.`);
+  }
+  for (const match of rawValue.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
+    if (!/^#[a-zA-Z_][\w:.-]*$/.test(match[2])) {
+      throw new Error(`SVG attribute ${attributeName} may only use local url(#id) references.`);
+    }
+  }
+  if ((attributeName === "href" || attributeName === "xlink:href") && !/^#[a-zA-Z_][\w:.-]*$/.test(rawValue)) {
+    throw new Error(`SVG attribute ${attributeName} may only reference a local #id.`);
+  }
+}
+
+function validateCowartSvgContent(svgContent) {
+  const content = nonEmptyString(svgContent);
+  if (!content) throw new Error("svgContent is required.");
+  const byteLength = Buffer.byteLength(content, "utf8");
+  if (byteLength > MAX_INLINE_SVG_BYTES) {
+    throw new Error(`svgContent exceeds the ${MAX_INLINE_SVG_BYTES}-byte limit.`);
+  }
+
+  let rootTag = null;
+  let elementCount = 0;
+  const parser = new SaxesParser({ xmlns: true });
+  parser.on("doctype", () => {
+    throw new Error("SVG doctype declarations are not allowed.");
+  });
+  parser.on("processinginstruction", () => {
+    throw new Error("SVG processing instructions are not allowed.");
+  });
+  parser.on("opentag", (tag) => {
+    elementCount += 1;
+    const elementName = String(tag.local || tag.name || "").toLowerCase();
+    if (!ALLOWED_SVG_ELEMENTS.has(elementName)) {
+      throw new Error(`SVG element <${tag.name}> is not allowed.`);
+    }
+    if (tag.prefix || (tag.uri && tag.uri !== SVG_NAMESPACE)) {
+      throw new Error(`SVG element <${tag.name}> uses an unsupported namespace.`);
+    }
+    if (!rootTag) {
+      if (elementName !== "svg") throw new Error("svgContent root element must be <svg>.");
+      rootTag = tag;
+    }
+
+    for (const attribute of Object.values(tag.attributes)) {
+      const attributeName = String(attribute.name || "").toLowerCase();
+      if (attributeName.startsWith("on") || !ALLOWED_SVG_ATTRIBUTES.has(attributeName)) {
+        throw new Error(`SVG attribute ${attribute.name} is not allowed.`);
+      }
+      if (attributeName === "xmlns" && attribute.value !== SVG_NAMESPACE) {
+        throw new Error(`SVG xmlns must be ${SVG_NAMESPACE}.`);
+      }
+      if (attributeName === "xmlns:xlink" && attribute.value !== XLINK_NAMESPACE) {
+        throw new Error(`SVG xmlns:xlink must be ${XLINK_NAMESPACE}.`);
+      }
+      if (
+        attribute.uri &&
+        attribute.uri !== XLINK_NAMESPACE &&
+        attribute.uri !== "http://www.w3.org/2000/xmlns/" &&
+        attribute.uri !== "http://www.w3.org/XML/1998/namespace"
+      ) {
+        throw new Error(`SVG attribute ${attribute.name} uses an unsupported namespace.`);
+      }
+      validateSvgAttributeValue(attributeName, attribute.value);
+    }
+  });
+
+  try {
+    parser.write(content).close();
+  } catch (error) {
+    throw new Error(`Invalid or unsafe SVG: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!rootTag || elementCount < 2) {
+    throw new Error("svgContent must contain an <svg> root and at least one drawing element.");
+  }
+
+  const rootAttributes = Object.fromEntries(
+    Object.values(rootTag.attributes).map((attribute) => [
+      String(attribute.name || "").toLowerCase(),
+      attribute.value,
+    ]),
+  );
+  const viewBoxSize = parseSvgViewBox(rootAttributes.viewbox);
+  const width = parseSvgLength(rootAttributes.width) || viewBoxSize?.width;
+  const height = parseSvgLength(rootAttributes.height) || viewBoxSize?.height;
+  if (!width || !height) {
+    throw new Error("svgContent must define positive width/height or a positive viewBox.");
+  }
+
+  return {
+    content,
+    byteLength,
+    imageSize: { width, height },
+    elementCount,
+  };
 }
 
 async function uniqueFilePath(dir, requestedName) {
@@ -380,6 +607,9 @@ function choosePlacement({ store, pageId, parentId, anchorShape, width, height, 
 
 async function getImageDimensions(filePath) {
   const buffer = await readFile(filePath);
+  if (extname(filePath).toLowerCase() === ".svg") {
+    return validateCowartSvgContent(buffer.toString("utf8")).imageSize;
+  }
   if (buffer.length >= 24 && buffer.toString("ascii", 1, 4) === "PNG") {
     return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
   }
@@ -404,7 +634,7 @@ async function getImageDimensions(filePath) {
       };
     }
   }
-  throw new Error(`Could not read image dimensions for ${filePath}. Pass displayWidth/displayHeight and use a PNG/JPEG/WebP source.`);
+  throw new Error(`Could not read image dimensions for ${filePath}. Use a valid SVG/PNG/JPEG/WebP source.`);
 }
 
 async function insertCowartImage(args = {}) {
@@ -583,6 +813,38 @@ async function insertCowartImage(args = {}) {
     replacedShapeIds,
     dryRun: Boolean(args.dryRun),
   };
+}
+
+async function drawCowartSvg(args = {}) {
+  const validated = validateCowartSvgContent(args.svgContent);
+  const fileName = sanitizeSvgFileName(args.fileName);
+  const tempDir = await mkdtemp(join(tmpdir(), "cowart-svg-"));
+  const tempFile = join(tempDir, fileName);
+  try {
+    await writeFile(tempFile, validated.content, "utf8");
+    const result = await insertCowartImage({
+      ...args,
+      imagePath: tempFile,
+      fileName,
+      altText: nonEmptyString(args.altText) || "Cowart SVG drawing",
+      shapeMeta: {
+        ...(args.shapeMeta && typeof args.shapeMeta === "object" ? args.shapeMeta : {}),
+        cowartInlineSvg: true,
+      },
+      assetMeta: {
+        ...(args.assetMeta && typeof args.assetMeta === "object" ? args.assetMeta : {}),
+        cowartInlineSvg: true,
+      },
+    });
+    return {
+      ...result,
+      sourceImagePath: undefined,
+      svgBytes: validated.byteLength,
+      svgElementCount: validated.elementCount,
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function insertCowartHtmlDraft(args = {}) {
@@ -1297,7 +1559,7 @@ function registerCowartImageTools(mcpServer) {
     {
       title: "Insert Cowart Image",
       description:
-        "Copy a local bitmap into a Cowart page-local assets folder, create a tldraw image asset and shape, replace a targeted AI image holder by default, otherwise place it beside an anchor or clear page area, and save the project-backed Cowart canvas.",
+        "Copy a local SVG or bitmap into a Cowart page-local assets folder, create a tldraw image asset and shape, replace a targeted AI image holder by default, otherwise place it beside an anchor or clear page area, and save the project-backed Cowart canvas.",
       inputSchema: {
         imagePath: z.string().trim(),
         projectDir: z.string().trim().optional(),
@@ -1333,6 +1595,53 @@ function registerCowartImageTools(mcpServer) {
           {
             type: "text",
             text: `${result.dryRun ? "Planned" : "Inserted"} ${result.shapeId} on ${result.pageId} at (${result.bounds.x}, ${result.bounds.y}) using ${result.index}.`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  mcpServer.registerTool(
+    TOOL_DRAW_SVG,
+    {
+      title: "Draw Cowart SVG",
+      description:
+        "Draw a simple illustration directly on the Cowart canvas from model-authored inline SVG. Use this for requests such as \"draw a pig\", simple icons, diagrams, badges, or labeled vector art that do not require an external image-generation provider. The SVG is validated, saved as a page-local asset, inserted as a tldraw image shape, and placed in a clear area or at the selected anchor.",
+      inputSchema: {
+        svgContent: z.string().trim().min(1).max(MAX_INLINE_SVG_BYTES),
+        projectDir: z.string().trim().optional(),
+        canvasDir: z.string().trim().optional(),
+        cowartUrl: z.string().trim().optional(),
+        pageId: z.string().trim().optional(),
+        anchorShapeId: z.string().trim().optional(),
+        sourceShapeId: z.string().trim().optional(),
+        fileName: z.string().trim().optional(),
+        placement: z.enum(["right", "left", "below"]).optional(),
+        margin: z.number().nonnegative().optional(),
+        matchAnchor: z.boolean().optional(),
+        replaceAiImageHolder: z.boolean().optional(),
+        displayWidth: z.number().positive().optional(),
+        displayHeight: z.number().positive().optional(),
+        altText: z.string().trim().optional(),
+        shapeMeta: z.record(z.string(), z.unknown()).optional(),
+        assetMeta: z.record(z.string(), z.unknown()).optional(),
+        dryRun: z.boolean().optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input = {}) => {
+      const result = await drawCowartSvg(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${result.dryRun ? "Planned" : "Drew"} SVG shape ${result.shapeId} on ${result.pageId} at (${result.bounds.x}, ${result.bounds.y}) with size ${result.bounds.w}x${result.bounds.h}. Asset id ${result.assetId}; file ${result.assetFile}; URL ${result.assetUrl}; parent ${result.parentId}; index ${result.index}.`,
           },
         ],
         structuredContent: result,
